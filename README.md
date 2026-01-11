@@ -1,4 +1,4 @@
-# French ID Photo Maker
+# ID Photo Maker
 
 A simple, lightweight Python application to create official French Passport/ID photos (35x45mm) at home.
 
