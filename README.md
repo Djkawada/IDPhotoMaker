@@ -20,9 +20,16 @@ A simple, lightweight Python application to create official French Passport/ID p
 *   Python 3.
 *   `tkinter` (usually installed with Python).
 
-## Installation
+## Download
+**[Click here to download the latest version for Windows, Linux, and macOS](https://github.com/Djkawada/IDPhotoMaker/releases)**
 
-### Linux (Automatic)
+*   **Windows:** Download `id_photo_maker.exe`
+*   **Linux:** Download `id_photo_maker`
+*   **macOS:** Download `id_photo_maker`
+
+## Manual Installation (Source)
+
+### Linux (Automatic Script)
 
 1.  Clone this repository:
     ```bash
