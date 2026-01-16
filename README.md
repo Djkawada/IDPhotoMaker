@@ -1,5 +1,11 @@
 # ID Photo Maker
 
+![Version](https://img.shields.io/github/v/release/Djkawada/IDPhotoMaker?include_prereleases&style=flat-square&color=blue)
+![License](https://img.shields.io/github/license/Djkawada/IDPhotoMaker?style=flat-square&color=orange)
+![Downloads](https://img.shields.io/github/downloads/Djkawada/IDPhotoMaker/total?style=flat-square&color=brightgreen)
+![Python](https://img.shields.io/github/languages/top/Djkawada/IDPhotoMaker?style=flat-square)
+
+
 A simple, lightweight Python application to create official French Passport/ID photos (35x45mm) at home.
 
 ![ID Photo Maker Screenshot](https://via.placeholder.com/800x600?text=Application+Screenshot)
