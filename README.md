@@ -7,6 +7,8 @@
 
 A lightweight Python application with a modern dark UI to create official French Passport/ID photos (35×45 mm at 300 DPI) at home.
 
+![ID Photo Maker](assets/screenshot.png)
+
 ## Features
 
 * **Official Dimensions:** Outputs exact 35×45 mm (413×531 px @ 300 DPI) photos on a 10×15 cm (4×6") sheet with **6 photos**.

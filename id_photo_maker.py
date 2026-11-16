@@ -12,7 +12,7 @@ FACE_MAX_MM = 36
 
 # Canvas Dimensions (Screen display)
 CANVAS_WIDTH = 620
-CANVAS_HEIGHT = 560
+CANVAS_HEIGHT = 590
 
 # Paper Dimensions (10x15 cm)
 PAPER_WIDTH_MM = 150
