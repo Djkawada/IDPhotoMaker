@@ -1,9 +1,8 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk, ImageDraw
-import sys
+from PIL import Image, ImageOps, ImageTk
 
-# Constants for French ID Photos
+# Constants for French ID Photos (35x45mm @ 300 DPI)
 DPI = 300
 MM_TO_INCH = 1 / 25.4
 PHOTO_WIDTH_MM = 35
@@ -12,319 +11,486 @@ FACE_MIN_MM = 32
 FACE_MAX_MM = 36
 
 # Canvas Dimensions (Screen display)
-CANVAS_WIDTH = 600
-CANVAS_HEIGHT = 500
-CROP_FRAME_SCALE = 1.0  # Scale factor for display on screen vs actual print pixels
+CANVAS_WIDTH = 620
+CANVAS_HEIGHT = 560
 
 # Paper Dimensions (10x15 cm)
 PAPER_WIDTH_MM = 150
 PAPER_HEIGHT_MM = 100
-MARGIN_MM = 2
+
+# Modern Dark Palette
+BG_APP = "#16181d"
+BG_PANEL = "#1f232b"
+BG_CARD = "#262b36"
+BG_CANVAS = "#111317"
+FG_TEXT = "#e5e7eb"
+FG_MUTED = "#9ca3af"
+ACCENT_BLUE = "#3b82f6"
+ACCENT_GREEN = "#10b981"
+ACCENT_ORANGE = "#f97316"
+ACCENT_RED = "#ef4444"
+BTN_NEUTRAL = "#2d333f"
+
+
+def _flatten_to_rgb(img: Image.Image) -> Image.Image:
+    """Applies EXIF orientation and composites any alpha channel onto white RGB."""
+    img = ImageOps.exif_transpose(img)
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        rgba = img.convert("RGBA")
+        white_bg = Image.new("RGB", rgba.size, (255, 255, 255))
+        white_bg.paste(rgba, mask=rgba.split()[3])
+        return white_bg
+    if img.mode != "RGB":
+        return img.convert("RGB")
+    return img
+
 
 class PhotoState:
     def __init__(self):
+        self.original: Image.Image | None = None
+        self.preview: Image.Image | None = None
+        self.preview_ratio: float = 1.0
+        self.scale: float = 1.0
+        self.base_scale: float = 1.0
+        self.angle: float = 0.0
+        # Center of the rotated image in canvas coordinates
+        self.center_x: float = CANVAS_WIDTH / 2
+        self.center_y: float = CANVAS_HEIGHT / 2
+        self.has_image: bool = False
+
+    def reset(self):
         self.original = None
         self.preview = None
         self.preview_ratio = 1.0
         self.scale = 1.0
-        self.angle = 0.0
-        self.offset_x = 0
-        self.offset_y = 0
         self.base_scale = 1.0
+        self.angle = 0.0
+        self.center_x = CANVAS_WIDTH / 2
+        self.center_y = CANVAS_HEIGHT / 2
         self.has_image = False
 
+
 class IDPhotoMaker:
-    def __init__(self, root):
+    def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("French ID Photo Maker (35x45mm)")
-        self.root.geometry("1000x850")
+        self.root.geometry("1040x760")
+        self.root.minsize(880, 640)
+        self.root.configure(bg=BG_APP)
 
-        # State management for 2 photos
         self.photos = {1: PhotoState(), 2: PhotoState()}
         self.current_slot = 1
-        
-        # Interaction state
+
         self.is_dragging = False
         self.last_mouse_x = 0
         self.last_mouse_y = 0
 
-        self.photo_image_tk = None # Keep reference
+        self.photo_image_tk = None
+        self.preview_sheet_tk = None
+        self.crop_w = self.get_px(PHOTO_WIDTH_MM)
+        self.crop_h = self.get_px(PHOTO_HEIGHT_MM)
 
-        # GUI Layout
         self.create_widgets()
-        
+
+    def get_px(self, mm: float) -> int:
+        """Convert mm to pixels at current DPI."""
+        return int(round(mm * MM_TO_INCH * DPI))
+
+    def _make_button(self, parent, text, command, bg=BTN_NEUTRAL, fg=FG_TEXT, **kwargs):
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=bg,
+            fg=fg,
+            activebackground=bg,
+            activeforeground=fg,
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
+            cursor="hand2",
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=6,
+            **kwargs,
+        )
+
     def create_widgets(self):
-        # Top Control Panel
-        control_frame = tk.Frame(self.root, pady=10)
-        control_frame.pack(fill=tk.X)
+        # Main container: Left Sidebar + Right Canvas
+        main_frame = tk.Frame(self.root, bg=BG_APP)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=(14, 6))
 
-        # Slot Selection and Loading
-        slot_frame = tk.Frame(control_frame, relief=tk.GROOVE, borderwidth=1)
-        slot_frame.pack(side=tk.LEFT, padx=10)
-        
-        tk.Label(slot_frame, text="Select Photo to Edit:").pack(anchor=tk.W, padx=5)
-        
-        self.btn_slot1 = tk.Button(slot_frame, text="Photo 1 (Top Row)", command=lambda: self.switch_slot(1), width=15, bg="#4CAF50", fg="white")
-        self.btn_slot1.pack(side=tk.LEFT, padx=5, pady=5)
-        
-        self.btn_slot2 = tk.Button(slot_frame, text="Photo 2 (Bottom Row)", command=lambda: self.switch_slot(2), width=15, bg="#dddddd")
-        self.btn_slot2.pack(side=tk.LEFT, padx=5, pady=5)
+        # --- Left Sidebar ---
+        sidebar = tk.Frame(main_frame, bg=BG_PANEL, width=300, padx=14, pady=14)
+        sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 14))
+        sidebar.pack_propagate(False)
 
-        btn_load = tk.Button(control_frame, text="Load Image", command=self.load_image, bg="#2196F3", fg="white", height=2)
-        btn_load.pack(side=tk.LEFT, padx=20)
-        
-        # Tools Frame (Rotation & Zoom)
-        tools_frame = tk.Frame(control_frame)
-        tools_frame.pack(side=tk.LEFT, padx=20)
-        
-        # Rotation
-        tk.Label(tools_frame, text="Rotate:").grid(row=0, column=0, sticky="e")
-        self.rot_slider = tk.Scale(tools_frame, from_=-45, to=45, orient=tk.HORIZONTAL, length=150, command=self.on_rotate_slide)
+        tk.Label(
+            sidebar,
+            text="ID Photo Maker",
+            bg=BG_PANEL,
+            fg=FG_TEXT,
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor=tk.W)
+        tk.Label(
+            sidebar,
+            text="French 35×45 mm • 300 DPI • 10×15 cm sheet",
+            bg=BG_PANEL,
+            fg=FG_MUTED,
+            font=("Segoe UI", 8),
+        ).pack(anchor=tk.W, pady=(0, 14))
+
+        # Slot Selection Card
+        slot_card = tk.Frame(sidebar, bg=BG_CARD, padx=10, pady=10)
+        slot_card.pack(fill=tk.X, pady=(0, 12))
+
+        tk.Label(
+            slot_card,
+            text="PHOTO SLOTS",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor=tk.W, pady=(0, 6))
+
+        slot_btn_row = tk.Frame(slot_card, bg=BG_CARD)
+        slot_btn_row.pack(fill=tk.X)
+        self.btn_slot1 = self._make_button(
+            slot_btn_row, "Photo 1 (Top)", lambda: self.switch_slot(1), bg=ACCENT_GREEN, fg="white"
+        )
+        self.btn_slot1.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        self.btn_slot2 = self._make_button(
+            slot_btn_row, "Photo 2 (Bottom)", lambda: self.switch_slot(2), bg=BTN_NEUTRAL, fg=FG_TEXT
+        )
+        self.btn_slot2.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        file_btn_row = tk.Frame(slot_card, bg=BG_CARD)
+        file_btn_row.pack(fill=tk.X, pady=(8, 0))
+        self.btn_load = self._make_button(
+            file_btn_row, "Load Image", self.load_image, bg=ACCENT_BLUE, fg="white"
+        )
+        self.btn_load.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        self.btn_clear = self._make_button(
+            file_btn_row, "Clear Slot", self.clear_slot, bg=BTN_NEUTRAL, fg=ACCENT_RED
+        )
+        self.btn_clear.pack(side=tk.LEFT, padx=(4, 0))
+
+        # Adjustments Card
+        adj_card = tk.Frame(sidebar, bg=BG_CARD, padx=10, pady=10)
+        adj_card.pack(fill=tk.X, pady=(0, 12))
+
+        tk.Label(
+            adj_card,
+            text="ADJUSTMENTS",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor=tk.W, pady=(0, 6))
+
+        tk.Label(adj_card, text="Rotate (°):", bg=BG_CARD, fg=FG_TEXT, font=("Segoe UI", 9)).pack(anchor=tk.W)
+        self.rot_slider = tk.Scale(
+            adj_card,
+            from_=-45,
+            to=45,
+            resolution=0.5,
+            orient=tk.HORIZONTAL,
+            command=self.on_rotate_slide,
+            bg=BG_CARD,
+            fg=FG_TEXT,
+            troughcolor=BG_CANVAS,
+            highlightthickness=0,
+            bd=0,
+        )
         self.rot_slider.set(0)
-        self.rot_slider.grid(row=0, column=1)
-        
-        btn_rot90 = tk.Button(tools_frame, text="+90°", command=self.rotate_90)
-        btn_rot90.grid(row=0, column=2, padx=5)
+        self.rot_slider.pack(fill=tk.X, pady=(0, 6))
 
-        # Zoom Slider (Alternative to scroll)
-        tk.Label(tools_frame, text="Zoom:").grid(row=1, column=0, sticky="e")
-        self.zoom_slider = tk.Scale(tools_frame, from_=10, to=400, orient=tk.HORIZONTAL, length=150, command=self.on_zoom_slide)
+        rot_btns = tk.Frame(adj_card, bg=BG_CARD)
+        rot_btns.pack(fill=tk.X, pady=(0, 10))
+        self._make_button(rot_btns, "-90°", lambda: self.rotate_90(90)).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3)
+        )
+        self._make_button(rot_btns, "Reset", self.reset_transform).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=3
+        )
+        self._make_button(rot_btns, "+90°", lambda: self.rotate_90(-90)).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0)
+        )
+
+        tk.Label(adj_card, text="Zoom (%):", bg=BG_CARD, fg=FG_TEXT, font=("Segoe UI", 9)).pack(anchor=tk.W)
+        self.zoom_slider = tk.Scale(
+            adj_card,
+            from_=10,
+            to=400,
+            orient=tk.HORIZONTAL,
+            command=self.on_zoom_slide,
+            bg=BG_CARD,
+            fg=FG_TEXT,
+            troughcolor=BG_CANVAS,
+            highlightthickness=0,
+            bd=0,
+        )
         self.zoom_slider.set(100)
-        self.zoom_slider.grid(row=1, column=1)
+        self.zoom_slider.pack(fill=tk.X)
 
-        self.btn_save = tk.Button(control_frame, text="Save Printable Sheet", command=self.save_result, bg="#FF5722", fg="white", height=2, state=tk.DISABLED)
-        self.btn_save.pack(side=tk.RIGHT, padx=10)
-        
-        # Instructions
-        instr_frame = tk.Frame(self.root)
-        instr_frame.pack(side=tk.TOP, pady=5)
-        tk.Label(instr_frame, text="1. Select 'Photo 1' or 'Photo 2'.  2. Click 'Load Image'.  3. Adjust (Zoom/Rotate/Drag).", font=("Arial", 10)).pack()
-        tk.Label(instr_frame, text="Fit face between red lines. If 2 photos are loaded, sheet will have 3 of each.", font=("Arial", 9, "bold"), fg="#666").pack()
+        # Guide Legend Card
+        guide_card = tk.Frame(sidebar, bg=BG_CARD, padx=10, pady=10)
+        guide_card.pack(fill=tk.X, pady=(0, 12))
+        tk.Label(
+            guide_card,
+            text="COMPLIANCE GUIDE",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor=tk.W, pady=(0, 4))
+        tk.Label(
+            guide_card,
+            text="• Drag to position, scroll to zoom.\n• Fit chin-to-crown between Cyan (32mm) and Red (36mm) ovals.\n• If 2 photos are loaded: 3 top + 3 bottom.",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            justify=tk.LEFT,
+            wraplength=250,
+            font=("Segoe UI", 8),
+        ).pack(anchor=tk.W)
 
-        # Main Canvas area
-        self.canvas_frame = tk.Frame(self.root, bg="#333333")
-        self.canvas_frame.pack(fill=tk.BOTH, expand=True)
+        # Export Buttons (bottom of sidebar)
+        export_frame = tk.Frame(sidebar, bg=BG_PANEL)
+        export_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.canvas = tk.Canvas(self.canvas_frame, bg="#333333", width=CANVAS_WIDTH, height=CANVAS_HEIGHT, cursor="fleur")
+        self.btn_preview = self._make_button(
+            export_frame, "Preview 10×15 Sheet", self.preview_sheet, bg=BTN_NEUTRAL, fg=FG_TEXT, state=tk.DISABLED
+        )
+        self.btn_preview.pack(fill=tk.X, pady=(0, 6))
+
+        self.btn_save = self._make_button(
+            export_frame, "Save Printable Sheet", self.save_result, bg=ACCENT_ORANGE, fg="white", state=tk.DISABLED
+        )
+        self.btn_save.pack(fill=tk.X)
+
+        # --- Right Canvas Area ---
+        canvas_container = tk.Frame(main_frame, bg=BG_PANEL, padx=10, pady=10)
+        canvas_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.canvas = tk.Canvas(
+            canvas_container,
+            bg=BG_CANVAS,
+            width=CANVAS_WIDTH,
+            height=CANVAS_HEIGHT,
+            highlightthickness=1,
+            highlightbackground="#2d333f",
+            cursor="fleur",
+        )
         self.canvas.pack(anchor=tk.CENTER, expand=True)
 
-        # Events
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_down)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
-        # Mouse wheel for zoom (Linux usually Button-4/5 or MouseWheel)
         self.canvas.bind("<Button-4>", self.on_zoom_in)
         self.canvas.bind("<Button-5>", self.on_zoom_out)
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
 
+        # Status Bar
+        self.status_var = tk.StringVar(value="Ready — Load a photo into Slot 1 or Slot 2.")
+        status_bar = tk.Label(
+            self.root,
+            textvariable=self.status_var,
+            bg=BG_PANEL,
+            fg=FG_MUTED,
+            anchor=tk.W,
+            padx=14,
+            pady=5,
+            font=("Segoe UI", 8),
+        )
+        status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
         self.draw_overlay()
+        self.redraw()
         self.update_ui_state()
 
-    def get_px(self, mm):
-        """Convert mm to pixels at current DPI"""
-        return int(mm * MM_TO_INCH * DPI)
-    
-    def switch_slot(self, slot_num):
+    def switch_slot(self, slot_num: int):
         self.current_slot = slot_num
-        
-        # Update buttons visual
         if slot_num == 1:
-            self.btn_slot1.config(bg="#4CAF50", fg="white")
-            self.btn_slot2.config(bg="#dddddd", fg="black")
+            self.btn_slot1.config(bg=ACCENT_GREEN, fg="white")
+            self.btn_slot2.config(bg=BTN_NEUTRAL, fg=FG_TEXT)
         else:
-            self.btn_slot1.config(bg="#dddddd", fg="black")
-            self.btn_slot2.config(bg="#4CAF50", fg="white")
-            
-        # Update sliders to match state
+            self.btn_slot1.config(bg=BTN_NEUTRAL, fg=FG_TEXT)
+            self.btn_slot2.config(bg=ACCENT_GREEN, fg="white")
+
         state = self.photos[self.current_slot]
-        if state.has_image:
+        if state.has_image and state.base_scale > 0:
             self.rot_slider.set(state.angle)
-            # Map scale back to slider? 
-            # Slider = (scale / base_scale) * 100
-            if state.base_scale > 0:
-                slider_val = (state.scale / state.base_scale) * 100
-                self.zoom_slider.set(slider_val)
+            self.zoom_slider.set(max(10, min(400, (state.scale / state.base_scale) * 100)))
         else:
             self.rot_slider.set(0)
             self.zoom_slider.set(100)
-            
+
         self.redraw()
         self.update_ui_state()
 
     def update_ui_state(self):
-        # Enable save if at least one photo is loaded
-        if self.photos[1].has_image or self.photos[2].has_image:
-            self.btn_save.config(state=tk.NORMAL)
+        has_any = self.photos[1].has_image or self.photos[2].has_image
+        export_state = tk.NORMAL if has_any else tk.DISABLED
+        self.btn_save.config(state=export_state)
+        self.btn_preview.config(state=export_state)
+        cur_has = self.photos[self.current_slot].has_image
+        self.btn_clear.config(state=tk.NORMAL if cur_has else tk.DISABLED)
+
+    def _build_preview(self, state: PhotoState):
+        assert state.original is not None
+        w, h = state.original.size
+        max_dim = 1000
+        if max(w, h) > max_dim:
+            state.preview_ratio = max(w, h) / max_dim
+            new_w = max(1, int(round(w / state.preview_ratio)))
+            new_h = max(1, int(round(h / state.preview_ratio)))
+            state.preview = state.original.resize((new_w, new_h), Image.Resampling.BILINEAR)
         else:
-            self.btn_save.config(state=tk.DISABLED)
+            state.preview_ratio = 1.0
+            state.preview = state.original.copy()
 
     def load_image(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.JPG *.JPEG *.PNG *.WEBP *.BMP")])
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.JPG *.JPEG *.PNG *.WEBP *.BMP")]
+        )
         if not file_path:
             return
 
         try:
-            state = self.photos[self.current_slot]
-            state.original = Image.open(file_path)
-            # Convert to RGB if necessary
-            if state.original.mode not in ("RGB", "RGBA"):
-                state.original = state.original.convert("RGB")
-            
-            # Create a working preview image (max dim 1000px) for performance
-            w, h = state.original.size
-            max_dim = 1000
-            if max(w, h) > max_dim:
-                state.preview_ratio = max(w, h) / max_dim
-                new_w = int(w / state.preview_ratio)
-                new_h = int(h / state.preview_ratio)
-                state.preview = state.original.resize((new_w, new_h), Image.Resampling.BILINEAR)
-            else:
-                state.preview_ratio = 1.0
-                state.preview = state.original.copy()
+            with Image.open(file_path) as raw:
+                rgb_img = _flatten_to_rgb(raw)
 
+            state = self.photos[self.current_slot]
+            state.original = rgb_img
+            self._build_preview(state)
             state.has_image = True
-            
-            # Reset state
-            state.angle = 0
+            state.angle = 0.0
             self.rot_slider.set(0)
-            
-            # Initial fit logic
-            crop_w_px = self.get_px(PHOTO_WIDTH_MM)
-            crop_h_px = self.get_px(PHOTO_HEIGHT_MM)
-            
+
             img_w, img_h = state.preview.size
-            scale_w = crop_w_px / img_w
-            scale_h = crop_h_px / img_h
-            initial_scale = max(scale_w, scale_h) * 1.5 
-            
+            initial_scale = max(self.crop_w / img_w, self.crop_h / img_h) * 1.35
             state.scale = initial_scale
-            state.base_scale = initial_scale / 1.0
-            self.zoom_slider.set(100) 
-            
-            # Center image
-            scaled_w = img_w * state.scale
-            scaled_h = img_h * state.scale
-            state.offset_x = (CANVAS_WIDTH - scaled_w) / 2
-            state.offset_y = (CANVAS_HEIGHT - scaled_h) / 2
-            
+            state.base_scale = initial_scale
+            self.zoom_slider.set(100)
+
+            state.center_x = CANVAS_WIDTH / 2
+            state.center_y = CANVAS_HEIGHT / 2
+
+            self.status_var.set(f"Loaded photo into Slot {self.current_slot} ({rgb_img.width}×{rgb_img.height}px).")
             self.redraw()
             self.update_ui_state()
-            
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open image: {e}")
+
+    def clear_slot(self):
+        self.photos[self.current_slot].reset()
+        self.rot_slider.set(0)
+        self.zoom_slider.set(100)
+        self.status_var.set(f"Cleared Slot {self.current_slot}.")
+        self.redraw()
+        self.update_ui_state()
+
+    def reset_transform(self):
+        state = self.photos[self.current_slot]
+        if not state.has_image:
+            return
+        state.angle = 0.0
+        state.scale = state.base_scale
+        state.center_x = CANVAS_WIDTH / 2
+        state.center_y = CANVAS_HEIGHT / 2
+        self.rot_slider.set(0)
+        self.zoom_slider.set(100)
+        self.redraw()
 
     def on_rotate_slide(self, val):
         state = self.photos[self.current_slot]
         if state.has_image:
             state.angle = float(val)
             self.redraw()
-        
-    def rotate_90(self):
+
+    def rotate_90(self, degrees: int):
         state = self.photos[self.current_slot]
         if state.has_image and state.original:
-            state.original = state.original.rotate(-90, expand=True)
-            
-            # Regenerate preview
-            w, h = state.original.size
-            max_dim = 1000
-            if max(w, h) > max_dim:
-                state.preview_ratio = max(w, h) / max_dim
-                new_w = int(w / state.preview_ratio)
-                new_h = int(h / state.preview_ratio)
-                state.preview = state.original.resize((new_w, new_h), Image.Resampling.BILINEAR)
-            else:
-                state.preview_ratio = 1.0
-                state.preview = state.original.copy()
-
-            state.angle = 0
+            state.original = state.original.rotate(degrees, expand=True)
+            self._build_preview(state)
+            state.angle = 0.0
             self.rot_slider.set(0)
-            
-            # Re-center
-            w, h = state.preview.size
-            state.offset_x = (CANVAS_WIDTH - w * state.scale) / 2
-            state.offset_y = (CANVAS_HEIGHT - h * state.scale) / 2
+            state.center_x = CANVAS_WIDTH / 2
+            state.center_y = CANVAS_HEIGHT / 2
             self.redraw()
 
     def on_zoom_slide(self, val):
         state = self.photos[self.current_slot]
-        if state.has_image and state.base_scale:
-            new_scale = (float(val) / 100.0) * state.base_scale
-            
-            # Center zoom logic
-            cx = CANVAS_WIDTH / 2
-            cy = CANVAS_HEIGHT / 2
-            
-            img_x_center = (cx - state.offset_x) / state.scale
-            img_y_center = (cy - state.offset_y) / state.scale
-            
-            state.scale = new_scale
-            state.offset_x = cx - img_x_center * state.scale
-            state.offset_y = cy - img_y_center * state.scale
-            
+        if state.has_image and state.base_scale > 0:
+            state.scale = (float(val) / 100.0) * state.base_scale
             self.redraw()
 
     def redraw(self):
         state = self.photos[self.current_slot]
-        
         self.canvas.delete("img")
-        
-        if not state.has_image:
-            # Show "Empty" text
-            self.canvas.create_text(CANVAS_WIDTH//2, CANVAS_HEIGHT//2, text=f"Slot {self.current_slot} Empty\nClick 'Load Image'", fill="#666", font=("Arial", 20), tags="img")
+
+        if not state.has_image or state.preview is None:
+            self.canvas.create_text(
+                CANVAS_WIDTH // 2,
+                CANVAS_HEIGHT // 2,
+                text=f"Slot {self.current_slot} Empty\nClick 'Load Image' to begin",
+                fill=FG_MUTED,
+                font=("Segoe UI", 16),
+                justify=tk.CENTER,
+                tags="img",
+            )
         else:
-            rotated = state.preview.rotate(state.angle, resample=Image.Resampling.NEAREST, expand=True)
-            new_w = int(rotated.width * state.scale)
-            new_h = int(rotated.height * state.scale)
-            
+            rotated = state.preview.rotate(
+                state.angle, resample=Image.Resampling.BILINEAR, expand=True, fillcolor=(255, 255, 255)
+            )
+            new_w = max(1, int(round(rotated.width * state.scale)))
+            new_h = max(1, int(round(rotated.height * state.scale)))
             display_img = rotated.resize((new_w, new_h), Image.Resampling.BILINEAR)
             self.photo_image_tk = ImageTk.PhotoImage(display_img)
+            self.canvas.create_image(
+                state.center_x, state.center_y, image=self.photo_image_tk, anchor=tk.CENTER, tags="img"
+            )
 
-            self.canvas.create_image(state.offset_x, state.offset_y, image=self.photo_image_tk, anchor=tk.NW, tags="img")
-        
         self.canvas.tag_raise("overlay")
         self.canvas.tag_raise("guide")
 
     def draw_overlay(self):
         self.canvas.delete("overlay")
         self.canvas.delete("guide")
-        
+
         cx = CANVAS_WIDTH // 2
         cy = CANVAS_HEIGHT // 2
-        
         self.crop_w = self.get_px(PHOTO_WIDTH_MM)
         self.crop_h = self.get_px(PHOTO_HEIGHT_MM)
-        
+
         x1 = cx - self.crop_w // 2
         y1 = cy - self.crop_h // 2
-        x2 = cx + self.crop_w // 2
-        y2 = cy + self.crop_h // 2
-        
-        # Darken outside
-        self.canvas.create_rectangle(0, 0, CANVAS_WIDTH, y1, fill="#000000", stipple="gray50", tags="overlay")
-        self.canvas.create_rectangle(0, y2, CANVAS_WIDTH, CANVAS_HEIGHT, fill="#000000", stipple="gray50", tags="overlay")
-        self.canvas.create_rectangle(0, y1, x1, y2, fill="#000000", stipple="gray50", tags="overlay")
-        self.canvas.create_rectangle(x2, y1, CANVAS_WIDTH, y2, fill="#000000", stipple="gray50", tags="overlay")
-        
+        x2 = x1 + self.crop_w
+        y2 = y1 + self.crop_h
+
+        self.canvas.create_rectangle(0, 0, CANVAS_WIDTH, y1, fill="#000000", stipple="gray50", width=0, tags="overlay")
+        self.canvas.create_rectangle(0, y2, CANVAS_WIDTH, CANVAS_HEIGHT, fill="#000000", stipple="gray50", width=0, tags="overlay")
+        self.canvas.create_rectangle(0, y1, x1, y2, fill="#000000", stipple="gray50", width=0, tags="overlay")
+        self.canvas.create_rectangle(x2, y1, CANVAS_WIDTH, y2, fill="#000000", stipple="gray50", width=0, tags="overlay")
+
         self.canvas.create_rectangle(x1, y1, x2, y2, outline="white", width=2, tags="overlay")
-        
+        self.canvas.create_line(cx, y1, cx, y2, fill="#ffffff", dash=(2, 6), tags="guide")
+
         px_32 = self.get_px(FACE_MIN_MM)
         px_36 = self.get_px(FACE_MAX_MM)
-        
-        ccx = x1 + self.crop_w // 2
-        ccy = y1 + self.crop_h // 2
-        
-        face_w_px = self.get_px(24) 
-        
-        self.canvas.create_oval(ccx - face_w_px//2, ccy - px_36//2, 
-                                ccx + face_w_px//2, ccy + px_36//2,
-                                outline="red", width=2, dash=(4, 4), tags="guide")
-        
-        self.canvas.create_oval(ccx - face_w_px//2, ccy - px_32//2, 
-                                ccx + face_w_px//2, ccy + px_32//2,
-                                outline="cyan", width=2, dash=(4, 4), tags="guide")
-                                
-        self.canvas.create_text(ccx, ccy, text="Face Limit (Red=Max, Cyan=Min)", fill="white", font=("Arial", 8), tags="guide")
+        face_w_px = self.get_px(24)
 
+        self.canvas.create_oval(
+            cx - face_w_px // 2, cy - px_36 // 2, cx + face_w_px // 2, cy + px_36 // 2,
+            outline="#ef4444", width=2, dash=(4, 4), tags="guide",
+        )
+        self.canvas.create_oval(
+            cx - face_w_px // 2, cy - px_32 // 2, cx + face_w_px // 2, cy + px_32 // 2,
+            outline="#22d3ee", width=2, dash=(4, 4), tags="guide",
+        )
+        self.canvas.create_text(
+            cx, y2 + 16, text="Face Height: Red = 36mm Max  |  Cyan = 32mm Min",
+            fill=FG_TEXT, font=("Segoe UI", 8, "bold"), tags="guide",
+        )
 
     # --- Interaction Handlers ---
     def on_mouse_down(self, event):
@@ -335,10 +501,8 @@ class IDPhotoMaker:
     def on_mouse_drag(self, event):
         state = self.photos[self.current_slot]
         if self.is_dragging and state.has_image:
-            dx = event.x - self.last_mouse_x
-            dy = event.y - self.last_mouse_y
-            state.offset_x += dx
-            state.offset_y += dy
+            state.center_x += event.x - self.last_mouse_x
+            state.center_y += event.y - self.last_mouse_y
             self.last_mouse_x = event.x
             self.last_mouse_y = event.y
             self.redraw()
@@ -349,130 +513,133 @@ class IDPhotoMaker:
     def on_mouse_wheel(self, event):
         if event.delta > 0:
             self.on_zoom_in(event)
-        else:
+        elif event.delta < 0:
             self.on_zoom_out(event)
 
     def on_zoom_in(self, event):
         state = self.photos[self.current_slot]
         if state.has_image and state.base_scale > 0:
-            current_slider = self.zoom_slider.get()
-            new_val = current_slider * 1.1
-            if new_val <= 400:
-                self.zoom_slider.set(new_val)
+            new_val = min(400.0, self.zoom_slider.get() * 1.1)
+            self.zoom_slider.set(new_val)
 
     def on_zoom_out(self, event):
         state = self.photos[self.current_slot]
         if state.has_image and state.base_scale > 0:
-            current_slider = self.zoom_slider.get()
-            new_val = current_slider / 1.1
-            if new_val >= 10:
-                self.zoom_slider.set(new_val)
+            new_val = max(10.0, self.zoom_slider.get() / 1.1)
+            self.zoom_slider.set(new_val)
 
-    # --- Save Logic ---
-    def process_image(self, state):
-        """Processes a single PhotoState and returns the final PIL image (35x45mm at 300DPI)"""
+    # --- Export / Sheet Generation ---
+    def process_image(self, state: PhotoState) -> Image.Image | None:
+        """Processes a PhotoState into a 35x45mm 300 DPI RGB image with white padding."""
         if not state.has_image or not state.original:
             return None
-            
-        # 1. High Quality Rotation
-        rotated_full = state.original.rotate(state.angle, resample=Image.Resampling.BICUBIC, expand=True)
-        
-        # 2. Crop
-        cx = CANVAS_WIDTH // 2
-        cy = CANVAS_HEIGHT // 2
-        x1_screen = cx - self.crop_w // 2
-        y1_screen = cy - self.crop_h // 2
-        
-        # Map to PREVIEW coords
-        crop_x_preview = (x1_screen - state.offset_x) / state.scale
-        crop_y_preview = (y1_screen - state.offset_y) / state.scale
-        crop_w_preview = self.crop_w / state.scale
-        crop_h_preview = self.crop_h / state.scale
-        
-        # Map to ORIGINAL coords
-        ratio = state.preview_ratio
-        crop_x_final = crop_x_preview * ratio
-        crop_y_final = crop_y_preview * ratio
-        crop_w_final = crop_w_preview * ratio
-        crop_h_final = crop_h_preview * ratio
-        
-        cropped = rotated_full.crop((
-            crop_x_final, 
-            crop_y_final, 
-            crop_x_final + crop_w_final, 
-            crop_y_final + crop_h_final
-        ))
-        
-        # Resize to Target
-        target_w = self.get_px(PHOTO_WIDTH_MM)
-        target_h = self.get_px(PHOTO_HEIGHT_MM)
-        return cropped.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-    def save_result(self):
-        # Generate final images
+        rotated_full = state.original.rotate(
+            state.angle, resample=Image.Resampling.BICUBIC, expand=True, fillcolor=(255, 255, 255)
+        )
+
+        # Crop box center relative to rotated image center in screen pixels
+        cx_screen = CANVAS_WIDTH // 2
+        cy_screen = CANVAS_HEIGHT // 2
+        dx_screen = cx_screen - state.center_x
+        dy_screen = cy_screen - state.center_y
+
+        # Convert screen offset & crop size into original-resolution pixels
+        factor = state.preview_ratio / state.scale
+        crop_w_orig = self.crop_w * factor
+        crop_h_orig = self.crop_h * factor
+        crop_cx_orig = (rotated_full.width / 2.0) + (dx_screen * factor)
+        crop_cy_orig = (rotated_full.height / 2.0) + (dy_screen * factor)
+
+        left = int(round(crop_cx_orig - crop_w_orig / 2.0))
+        top = int(round(crop_cy_orig - crop_h_orig / 2.0))
+        right = left + max(1, int(round(crop_w_orig)))
+        bottom = top + max(1, int(round(crop_h_orig)))
+
+        # Composite onto white background so out-of-bounds areas are white, never black
+        canvas = Image.new("RGB", (right - left, bottom - top), (255, 255, 255))
+        src_left = max(0, left)
+        src_top = max(0, top)
+        src_right = min(rotated_full.width, right)
+        src_bottom = min(rotated_full.height, bottom)
+
+        if src_right > src_left and src_bottom > src_top:
+            region = rotated_full.crop((src_left, src_top, src_right, src_bottom))
+            canvas.paste(region, (src_left - left, src_top - top))
+
+        return canvas.resize((self.crop_w, self.crop_h), Image.Resampling.LANCZOS)
+
+    def build_sheet(self) -> Image.Image | None:
         img1 = self.process_image(self.photos[1])
         img2 = self.process_image(self.photos[2])
-        
         if not img1 and not img2:
-            return # Should be blocked by UI state anyway
-            
-        save_path = filedialog.asksaveasfilename(defaultextension=".jpg", filetypes=[("JPEG", "*.jpg")])
+            return None
+
+        sheet_w = self.get_px(PAPER_WIDTH_MM)
+        sheet_h = self.get_px(PAPER_HEIGHT_MM)
+        sheet = Image.new("RGB", (sheet_w, sheet_h), "white")
+
+        cols, rows = 3, 2
+        gap_x, gap_y = 10, 10
+        total_w = (cols * self.crop_w) + ((cols - 1) * gap_x)
+        total_h = (rows * self.crop_h) + ((rows - 1) * gap_y)
+        start_x = (sheet_w - total_w) // 2
+        start_y = (sheet_h - total_h) // 2
+
+        if img1 and img2:
+            row_sources = [img1, img2]
+        elif img1:
+            row_sources = [img1, img1]
+        else:
+            row_sources = [img2, img2]
+
+        for r in range(rows):
+            for c in range(cols):
+                px = start_x + c * (self.crop_w + gap_x)
+                py = start_y + r * (self.crop_h + gap_y)
+                sheet.paste(row_sources[r], (px, py))
+
+        return sheet
+
+    def preview_sheet(self):
+        sheet = self.build_sheet()
+        if sheet is None:
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.title("10×15 cm Sheet Preview")
+        popup.configure(bg=BG_PANEL)
+        popup.transient(self.root)
+
+        preview_img = sheet.copy()
+        preview_img.thumbnail((720, 480), Image.Resampling.LANCZOS)
+        self.preview_sheet_tk = ImageTk.PhotoImage(preview_img)
+
+        tk.Label(popup, image=self.preview_sheet_tk, bg=BG_PANEL).pack(padx=14, pady=(14, 8))
+        self._make_button(popup, "Close", popup.destroy, bg=BTN_NEUTRAL).pack(pady=(0, 12))
+
+    def save_result(self):
+        sheet = self.build_sheet()
+        if sheet is None:
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".jpg",
+            filetypes=[("JPEG", "*.jpg *.jpeg"), ("PNG", "*.png")],
+        )
         if not save_path:
             return
-            
-        try:
-            target_w = self.get_px(PHOTO_WIDTH_MM)
-            target_h = self.get_px(PHOTO_HEIGHT_MM)
-            
-            # Create Sheet (6 photos)
-            sheet_w = self.get_px(PAPER_WIDTH_MM)
-            sheet_h = self.get_px(PAPER_HEIGHT_MM)
-            sheet = Image.new("RGB", (sheet_w, sheet_h), "white")
-            
-            cols = 3
-            rows = 2
-            
-            gap_x = 10 
-            gap_y = 10
-            
-            total_content_w = (cols * target_w) + ((cols - 1) * gap_x)
-            total_content_h = (rows * target_h) + ((rows - 1) * gap_y)
-            
-            start_x = (sheet_w - total_content_w) // 2
-            start_y = (sheet_h - total_content_h) // 2
-            
-            # Logic: 
-            # If both img1 and img2 exist: Row 1 = img1, Row 2 = img2.
-            # If only img1: All 6 = img1.
-            # If only img2: All 6 = img2.
-            
-            # Top Row
-            source_top = img1 if img1 else img2
-            
-            # Bottom Row
-            source_bottom = img2 if img2 else img1
-            
-            # If user explicitly loaded 2 photos, use top/bottom split.
-            # If user only loaded 1 (whichever slot), duplicate it everywhere.
-            if img1 and img2:
-                row_sources = [img1, img2]
-            elif img1:
-                row_sources = [img1, img1]
-            else:
-                row_sources = [img2, img2]
 
-            for r in range(rows):
-                source_img = row_sources[r]
-                for c in range(cols):
-                    px = start_x + c * (target_w + gap_x)
-                    py = start_y + r * (target_h + gap_y)
-                    sheet.paste(source_img, (px, py))
-            
-            sheet.save(save_path, quality=95, dpi=(DPI, DPI))
+        try:
+            if save_path.lower().endswith(".png"):
+                sheet.save(save_path, dpi=(DPI, DPI))
+            else:
+                sheet.save(save_path, quality=95, dpi=(DPI, DPI))
+            self.status_var.set(f"Saved printable sheet to {save_path}")
             messagebox.showinfo("Success", f"Saved sheet to {save_path}")
-            
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save: {e}")
+
 
 if __name__ == "__main__":
     root = tk.Tk()

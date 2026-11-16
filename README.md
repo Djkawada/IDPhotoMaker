@@ -5,71 +5,40 @@
 ![Downloads](https://img.shields.io/github/downloads/Djkawada/IDPhotoMaker/total?style=flat-square&color=brightgreen)
 ![Python](https://img.shields.io/github/languages/top/Djkawada/IDPhotoMaker?style=flat-square)
 
-
-A simple, lightweight Python application to create official French Passport/ID photos (35x45mm) at home.
-
-![ID Photo Maker Screenshot](https://via.placeholder.com/800x600?text=Application+Screenshot)
+A lightweight Python application with a modern dark UI to create official French Passport/ID photos (35×45 mm at 300 DPI) at home.
 
 ## Features
 
-*   **Official Dimensions:** Ensures photos match the 35x45mm standard.
-*   **Face Guides:** Overlays Cyan (Min) and Red (Max) face height guides (32-36mm) for compliance.
-*   **Interactive Tools:**
-    *   **Zoom:** Scroll or use slider.
-    *   **Rotate:** Slider (-45° to +45°) and +90° button.
-    *   **Move:** Drag to position.
-*   **Print Ready:** Generates a 10x15cm (4x6") JPEG with **6 photos** tiled, ready for standard photo printing.
+* **Official Dimensions:** Outputs exact 35×45 mm (413×531 px @ 300 DPI) photos on a 10×15 cm (4×6") sheet with **6 photos**.
+* **EXIF Auto-Orientation & White Padding:** Automatically rotates smartphone photos using EXIF metadata and pads out-of-bounds/transparent regions with white instead of black.
+* **Face Compliance Guides:** Cyan (32 mm min) and Red (36 mm max) face-height ovals with center alignment line.
+* **Interactive Tools:** Drag to position, mouse-wheel/slider zoom (10–400%), fine rotation (-45° to +45°), ±90° rotate, reset, clear slot, and **10×15 Sheet Preview** before saving as JPEG or PNG.
 
 ## Requirements
 
-*   Linux (tested), Windows, or macOS.
-*   Python 3.
-*   `tkinter` (usually installed with Python).
+* Linux, Windows, or macOS
+* Python 3 + `tkinter` + `Pillow`
 
 ## Download
-**[Click here to download the latest version for Windows, Linux, and macOS](https://github.com/Djkawada/IDPhotoMaker/releases)**
 
-*   **Windows:** Download `id_photo_maker.exe`
-*   **Linux:** Download `id_photo_maker`
-*   **macOS:** Download `id_photo_maker`
+**[Download the latest release for Windows, Linux, and macOS](https://github.com/Djkawada/IDPhotoMaker/releases)**
 
 ## Manual Installation (Source)
 
 ### Linux (Automatic Script)
-
-1.  Clone this repository:
-    ```bash
-    git clone https://github.com/Djkawada/IDPhotoMaker.git
-    cd IDPhotoMaker
-    ```
-2.  Run the install script:
-    ```bash
-    chmod +x install.sh
-    ./install.sh
-    ```
-3.  Launch **ID Photo Maker** from your app menu.
+```bash
+git clone https://github.com/Djkawada/IDPhotoMaker.git
+cd IDPhotoMaker
+chmod +x install.sh
+./install.sh
+```
 
 ### Manual / Other OS
-
-1.  Install Python dependencies:
-    ```bash
-    pip install Pillow
-    ```
-2.  Run the script:
-    ```bash
-    python3 id_photo_maker.py
-    ```
-
-## Usage
-
-1.  **Load:** Click "Load Image" to select a photo.
-2.  **Adjust:**
-    *   Zoom and Drag to frame the head.
-    *   Rotate to straighten if needed.
-    *   **Crucial:** Ensure the face height (Chin to Top of Skull) is **larger than the Cyan oval** and **smaller than the Red oval**.
-3.  **Save:** Click "Save Printable Sheet".
-4.  **Print:** Print the resulting 10x15cm image on photo paper at 100% scale (borderless).
+```bash
+pip install -r requirements.txt
+python3 id_photo_maker.py
+```
 
 ## License
 
-MIT License.
+MIT License — see [LICENSE](LICENSE).
